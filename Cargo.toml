@@ -1,0 +1,13 @@
+[package]
+name = "liveserve-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.6", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.4", features = ["fs"] }
+notify = "6.0"
+tokio-tungstenite = "0.18"
+futures-util = "0.3"
+clap = { version = "4.0", features = ["derive"] }
