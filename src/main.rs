@@ -3,7 +3,7 @@ use axum::{
     routing::get,
     Router,
 };
-use clap::Parser;
+use clap::{Parser, CommandFactory};
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
 use std::{
@@ -15,11 +15,17 @@ use tokio::{fs, sync::watch};
 use tower_http::services::ServeDir;
 
 #[derive(Parser)]
+#[clap(name = "Live Server", about = "A simple development server with live reload capability.")]
 struct Cli {
+    /// The port to run the server on (default: 8080)
     #[clap(short, long, default_value = "8080")]
     port: u16,
+
+    /// The root directory to serve files from (default: ./public)
     #[clap(short, long, default_value = "./public")]
     root: String,
+
+    /// The entry file for SPA fallback (default: index.html)
     #[clap(long, default_value = "index.html")]
     spa_entry: String,
 }
@@ -27,6 +33,11 @@ struct Cli {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
+    if let Err(e) = Cli::command().try_get_matches() {
+        eprintln!("Error parsing arguments: {}", e);
+        std::process::exit(1);
+    }
+
     let (tx, mut rx) = watch::channel(());
     let root = Arc::new(PathBuf::from(&args.root));
     let spa_entry = args.spa_entry.clone();
@@ -41,9 +52,7 @@ async fn main() {
             }
         })
         .unwrap();
-        watcher
-            .watch(root_clone.as_ref(), RecursiveMode::Recursive)
-            .unwrap();
+        watcher.watch(root_clone.as_ref(), RecursiveMode::Recursive).unwrap();
     });
 
     // WebSocket for live reload
@@ -93,6 +102,12 @@ async fn main() {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     println!("Serving at http://{}", addr);
+    println!("Usage:");
+    println!("  Run with default settings: live-server");
+    println!("  Specify a different root directory: live-server --root ./my-folder");
+    println!("  Use a different port: live-server --port 3000");
+    println!("  Set a custom SPA entry file: live-server --spa-entry app.html");
+
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
