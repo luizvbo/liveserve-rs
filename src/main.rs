@@ -3,18 +3,17 @@ use axum::{
     routing::get,
     Router,
 };
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use notify::{Event, RecursiveMode, Watcher};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     net::SocketAddr,
     path::PathBuf,
+    sync::mpsc,
     sync::{Arc, Mutex},
+    thread,
 };
-use tokio::{
-    fs,
-    sync::{mpsc::UnboundedSender, watch},
-};
+use tokio::sync::mpsc::UnboundedSender;
 use tower_http::services::ServeDir;
 use tracing::{error, info};
 use tracing_subscriber;
@@ -43,43 +42,43 @@ async fn main() {
     tracing_subscriber::fmt::init(); // Initialize logging
 
     let args = Cli::parse();
-    let (tx, mut rx) = watch::channel(());
+    let (tx, rx) = mpsc::channel();
+    let rx = Arc::new(Mutex::new(rx));
     let root = Arc::new(PathBuf::from(&args.root));
-    let spa_entry = args.spa_entry.clone();
 
     // File watcher setup
     let watcher_tx = tx.clone();
     let root_clone = Arc::clone(&root);
-    tokio::spawn(async move {
-        let mut watcher = notify::recommended_watcher(move |res| match res {
-            Ok(event) => {
-                println!("File change detected: {:?}", event);
-                info!("File change detected: {:?}", event);
-                let _ = watcher_tx.send(());
-            }
-            Err(e) => {
-                println!("Watch error: {:?}", e);
-                error!("Watch error: {:?}", e);
-            }
-        })
-        .expect("Failed to create file watcher");
+    let rx_clone = Arc::clone(&rx);
 
+    // Run the file watcher in a blocking thread
+    thread::spawn(move || {
+        let mut watcher = RecommendedWatcher::new(watcher_tx, Config::default())
+            .expect("Failed to create file watcher");
         if let Err(e) = watcher.watch(root_clone.as_ref(), RecursiveMode::Recursive) {
-            println!("Failed to watch directory: {:?}", e);
             error!("Failed to watch directory: {:?}", e);
         } else {
-            println!("Watching directory: {:?}", root_clone);
             info!("Watching directory: {:?}", root_clone);
+        }
+
+        for res in rx_clone.lock().unwrap().iter() {
+            match res {
+                Ok(event) => {
+                    info!("File change detected: {:?}", event);
+                }
+                Err(e) => error!("Watch error: {:?}", e),
+            }
         }
     });
 
     // WebSocket for live reload
     let ws_clients: Arc<Mutex<Vec<UnboundedSender<Message>>>> = Arc::new(Mutex::new(Vec::new()));
     let ws_clients_clone = Arc::clone(&ws_clients);
+    let rx_clone = Arc::clone(&rx);
 
     tokio::spawn(async move {
-        while rx.changed().await.is_ok() {
-            info!("Broadcasting reload message to clients");
+        for event in rx_clone.lock().unwrap().iter() {
+            info!("Broadcasting reload message to clients: {:?}", event);
             let mut clients = ws_clients_clone.lock().unwrap();
             clients.retain(|client| client.send(Message::Text("reload".into())).is_ok());
         }
