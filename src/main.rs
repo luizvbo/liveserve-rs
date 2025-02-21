@@ -11,8 +11,12 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use tokio::{fs, sync::watch};
+use tokio::{
+    fs,
+    sync::{mpsc::UnboundedSender, watch},
+};
 use tower_http::services::ServeDir;
+
 
 #[derive(Parser)]
 #[clap(
@@ -56,8 +60,7 @@ async fn main() {
     });
 
     // WebSocket for live reload
-    let ws_clients: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Message>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let ws_clients: Arc<Mutex<Vec<UnboundedSender<Message>>>> = Arc::new(Mutex::new(Vec::new()));
     let ws_clients_clone = Arc::clone(&ws_clients);
 
     tokio::spawn(async move {
@@ -91,12 +94,22 @@ async fn main() {
     let root_clone = Arc::clone(&root);
     let ws_script = r#"
 <script>
-    const socket = new WebSocket(`ws://${window.location.host}/ws`);
-    socket.onmessage = (event) => {
-        if (event.data === "reload") {
-            window.location.reload();
+    (function() {
+        function connect() {
+            const socket = new WebSocket(`ws://${window.location.host}/ws`);
+            socket.onmessage = (event) => {
+                if (event.data === "reload") {
+                    console.log("Reloading page...");
+                    window.location.reload();
+                }
+            };
+            socket.onclose = () => {
+                console.log("Live reload disconnected, attempting to reconnect...");
+                setTimeout(connect, 1000);
+            };
         }
-    };
+        connect();
+    })();
 </script>
 "#;
 
