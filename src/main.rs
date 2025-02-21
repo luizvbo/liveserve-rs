@@ -3,7 +3,7 @@ use axum::{
     routing::get,
     Router,
 };
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use futures_util::{SinkExt, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
 use std::{
@@ -16,7 +16,8 @@ use tokio::{
     sync::{mpsc::UnboundedSender, watch},
 };
 use tower_http::services::ServeDir;
-
+use tracing::{error, info};
+use tracing_subscriber;
 
 #[derive(Parser)]
 #[clap(
@@ -39,6 +40,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init(); // Initialize logging
+
     let args = Cli::parse();
     let (tx, mut rx) = watch::channel(());
     let root = Arc::new(PathBuf::from(&args.root));
@@ -48,15 +51,26 @@ async fn main() {
     let watcher_tx = tx.clone();
     let root_clone = Arc::clone(&root);
     tokio::spawn(async move {
-        let mut watcher = notify::recommended_watcher(move |res| {
-            if let Ok(Event { .. }) = res {
+        let mut watcher = notify::recommended_watcher(move |res| match res {
+            Ok(event) => {
+                println!("File change detected: {:?}", event);
+                info!("File change detected: {:?}", event);
                 let _ = watcher_tx.send(());
             }
+            Err(e) => {
+                println!("Watch error: {:?}", e);
+                error!("Watch error: {:?}", e);
+            }
         })
-        .unwrap();
-        watcher
-            .watch(root_clone.as_ref(), RecursiveMode::Recursive)
-            .unwrap();
+        .expect("Failed to create file watcher");
+
+        if let Err(e) = watcher.watch(root_clone.as_ref(), RecursiveMode::Recursive) {
+            println!("Failed to watch directory: {:?}", e);
+            error!("Failed to watch directory: {:?}", e);
+        } else {
+            println!("Watching directory: {:?}", root_clone);
+            info!("Watching directory: {:?}", root_clone);
+        }
     });
 
     // WebSocket for live reload
@@ -65,6 +79,7 @@ async fn main() {
 
     tokio::spawn(async move {
         while rx.changed().await.is_ok() {
+            info!("Broadcasting reload message to clients");
             let mut clients = ws_clients_clone.lock().unwrap();
             clients.retain(|client| client.send(Message::Text("reload".into())).is_ok());
         }
@@ -139,7 +154,7 @@ async fn main() {
         .route("/ws", ws_handler);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
-    println!("Serving at http://{}", addr);
+    info!("Serving at http://{}", addr);
 
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
