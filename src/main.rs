@@ -13,6 +13,7 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
+use tokio::fs as tokio_fs;
 use tokio::sync::mpsc::UnboundedSender;
 use tower_http::services::ServeDir;
 use tracing::{error, info};
@@ -45,6 +46,7 @@ async fn main() {
     let (tx, rx) = mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
     let root = Arc::new(PathBuf::from(&args.root));
+    let spa_entry = args.spa_entry.clone();
 
     // File watcher setup
     let watcher_tx = tx.clone();
@@ -127,21 +129,25 @@ async fn main() {
 </script>
 "#;
 
+    let spa_entry_clone = spa_entry.clone();
     let spa_handler = move |req: axum::http::Request<axum::body::Body>| {
         let root_clone_inner = Arc::clone(&root_clone);
         let ws_script = ws_script.to_string();
+        let spa_entry = spa_entry_clone.clone();
 
         async move {
             let path = root_clone_inner.join(req.uri().path().trim_start_matches('/'));
             if path.exists() {
-                let mut content = fs::read_to_string(&path).await.unwrap();
+                let mut content = tokio_fs::read_to_string(&path).await.unwrap();
                 if path.extension().map(|ext| ext == "html").unwrap_or(false) {
                     content.push_str(&ws_script);
                 }
                 return axum::response::Response::new(axum::body::Body::from(content));
             }
             axum::response::Response::new(axum::body::Body::from(
-                fs::read(root_clone_inner.join(spa_entry)).await.unwrap(),
+                tokio_fs::read(root_clone_inner.join(spa_entry))
+                    .await
+                    .unwrap(),
             ))
         }
     };
@@ -152,7 +158,7 @@ async fn main() {
         .fallback(get(spa_handler))
         .route("/ws", ws_handler);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     info!("Serving at http://{}", addr);
 
     axum::Server::bind(&addr)
