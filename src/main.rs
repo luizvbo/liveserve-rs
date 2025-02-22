@@ -1,6 +1,8 @@
-use axum::extract::ws::Message; // Add this line at the beginning of your imports
 use axum::{
-    extract::ws::{WebSocket, WebSocketUpgrade},
+    body::Body, // Import Body
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    http::StatusCode,   // Import StatusCode
+    response::Response, // Import Response
     routing::get,
     Router,
 };
@@ -16,9 +18,8 @@ use std::{
 };
 use tokio::fs as tokio_fs;
 use tokio::sync::mpsc::UnboundedSender;
-use tower_http::services::ServeDir;
 use tracing::{debug, error, info};
-use tracing_subscriber::{fmt, EnvFilter}; // Modified import
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser)]
 #[clap(
@@ -109,9 +110,10 @@ async fn main() {
         }
     });
 
-    let ws_clients_clone: Arc<Mutex<Vec<UnboundedSender<Message>>>> = Arc::clone(&ws_clients); 
+    let ws_clients_clone: Arc<Mutex<Vec<UnboundedSender<Message>>>> = Arc::clone(&ws_clients);
     let ws_handler = get(|ws: WebSocketUpgrade| async move {
-        let ws_clients_clone = Arc::clone(&ws_clients_clone);
+        let ws_clients_clone: Arc<Mutex<Vec<UnboundedSender<Message>>>> =
+            Arc::clone(&ws_clients_clone);
         ws.on_upgrade(move |socket: WebSocket| async move {
             let (mut tx, mut rx) = socket.split();
             let (client_tx, mut client_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -140,28 +142,41 @@ async fn main() {
         })
     });
 
-    // Middleware for SPA support
     let root_clone = Arc::clone(&root);
     let ws_script = r#"
 <script>
-    console.log("JS Script Injected"); // Simple JS log
+    console.log("JS Script Injected - Version 3"); // Version marker
+
     (function() {
         function connect() {
+            console.log("Before connect() call - Version 3"); // Log before connect
+
             const socket = new WebSocket(`ws://${window.location.host}/ws`);
+            console.log("Connecting to WebSocket... - Version 3"); // Log during connect
 
             socket.onopen = () => {
-                console.log('WebSocket connection opened');
+                console.log('WebSocket connection opened - Version 3');
             };
 
             socket.onmessage = (event) => {
-                if (event.data === "reload") {
-                    console.log("Reloading page...");
+                console.log("WebSocket message received (raw data):", event.data); // Raw data log
+                console.log("Type of event.data:", typeof event.data); // Type log
+
+                const messageData = String(event.data); // Force string conversion
+                console.log("WebSocket message as String:", messageData); // Log as String
+
+                if (messageData === "reload") { // Use the string version for comparison
+                    console.log("Entering reload block - Version 3");
+                    console.log("Reloading page NOW... (HARD RELOAD) - Version 3");
+                    console.log("Page reload function called (HARD RELOAD) - Version 3");
                     window.location.reload();
+                } else {
+                    console.log("Received message is NOT 'reload':", messageData); // Log if not "reload"
                 }
             };
 
             socket.onclose = () => {
-                console.log("WebSocket disconnected, attempting to reconnect...");
+                console.log("WebSocket disconnected, attempting to reconnect... - Version 3");
                 setTimeout(connect, 1000);
             };
 
@@ -174,41 +189,80 @@ async fn main() {
 </script>
 "#;
 
-    let spa_entry_clone = spa_entry.clone();
     let spa_handler = move |req: axum::http::Request<axum::body::Body>| {
         info!("Handling request for: {:?}", req.uri().path());
         let root_clone_inner = Arc::clone(&root_clone);
         let ws_script = ws_script.to_string();
-        let spa_entry = spa_entry_clone.clone();
+        let spa_entry_clone = spa_entry.clone();
 
         async move {
             let path = root_clone_inner.join(req.uri().path().trim_start_matches('/'));
-            if path.exists() {
-                let mut content = tokio_fs::read_to_string(&path).await.unwrap();
-                info!("Checking file extension for: {:?}", path);
-                if path.extension().map(|ext| ext == "html").unwrap_or(false) {
-                    info!("Injecting WebSocket script into: {:?}", path);
-                    content.push_str(&ws_script);
+            debug!("Attempting to serve path: {:?}", path);
+
+            if path.is_file() {
+                debug!("Path is a file: {:?}", path);
+                // Clone path *before* reading!
+                let path_clone_for_read = path.clone();
+                match tokio_fs::read_to_string(&path_clone_for_read).await {
+                    Ok(mut content) => {
+                        if path.extension().map(|ext| ext == "html").unwrap_or(false) {
+                            info!("Injecting WebSocket script into HTML file: {:?}", path);
+                            content.push_str(&ws_script);
+                            content.push_str(""); // Marker comment
+                            debug!("HTML content with script injected, serving.");
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "text/html; charset=utf-8")
+                                .body(Body::from(content))
+                                .unwrap()
+                        } else {
+                            debug!("Serving static file (non-HTML): {:?}", path);
+                            match tokio_fs::read(&path).await {
+                                Ok(bytes) => {
+                                    let mime_type =
+                                        mime_guess::from_path(path.clone()).first_or_octet_stream();
+                                    Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("Content-Type", mime_type.to_string())
+                                        .body(Body::from(bytes))
+                                        .unwrap()
+                                }
+                                Err(e) => {
+                                    error!("Error reading static file: {:?} - {:?}", path, e);
+                                    Response::builder()
+                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                        .body(Body::from(format!("Error reading file: {:?}", e)))
+                                        .unwrap()
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error reading file: {:?} - {:?}", path, e);
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::from(format!("Error reading file: {:?}", e)))
+                            .unwrap()
+                    }
                 }
-                return axum::response::Response::new(axum::body::Body::from(content));
+            } else {
+                debug!("Path is NOT a file or doesn't exist: {:?}", path);
+                Response::builder()
+                    .status(StatusCode::NOT_FOUND) // Explicit 404 for not found
+                    .body(Body::from("File not found"))
+                    .unwrap()
             }
-            axum::response::Response::new(axum::body::Body::from(
-                tokio_fs::read(root_clone_inner.join(spa_entry))
-                    .await
-                    .unwrap(),
-            ))
         }
     };
 
-    // Setup routes
+    // Modified Routes: spa_handler for all GET requests, WebSocket route
     let app = Router::new()
-        .route("/ws", ws_handler) // WebSocket first
-        .nest_service("/", ServeDir::new(Arc::clone(&root).as_ref())) // Serve files
-        .fallback(get(spa_handler)); // Handle unmatched routes
+        .route("/ws", ws_handler) // WebSocket route remains
+        .route("/*path", get(spa_handler)); // spa_handler for all GET requests
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     info!("Serving at http://{}", addr);
-    println!("Server address: http://{}", addr); // Print server address
+    println!("Serving at http://{}", addr);
 
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
