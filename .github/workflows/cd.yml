@@ -19,6 +19,7 @@ jobs:
       - test
       - cargo-audit
       - build
+      - crates_io_publish
     steps:
       - run: jq --exit-status 'all(.result == "success")' <<< '${{ toJson(needs) }}'
 
