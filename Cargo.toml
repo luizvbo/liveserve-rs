@@ -2,6 +2,10 @@
 name = "liveserve-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Luiz Otavio V. B. Oliveira <luiz.vbo@gmail.com>"]
+description = "Fast and lightweight development server with automatic file reloading. It serves static files and supports WebSockets for file change notifications, making it ideal for web development."
+license = "MIT"
+repository = "https://github.com/luizvbo/liveserve-rs"
 
 [dependencies]
 axum = { version = "0.6", features = ["ws"] }
