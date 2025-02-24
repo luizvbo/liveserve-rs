@@ -1,0 +1,18 @@
+[package]
+name = "liveserve-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.6", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+notify = "8.0.0"
+futures-util = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+mime_guess = "2.0"
+
+[dev-dependencies]
+hyper = { version = "0.14", features = ["full"] }
+tower = { version = "0.5.2", features = ["make"] }
